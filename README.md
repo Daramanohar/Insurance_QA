@@ -61,11 +61,12 @@ pip install -r requirements.txt
 3. Create a `.env` file in the project root:
 
 ```env
-PINECONE_API_KEY=your_api_key_here
-PINECONE_ENVIRONMENT=us-east-1-aws
+PINECONE_API_KEY=your_pinecone_api_key
+PINECONE_ENVIRONMENT=us-east-1
 PINECONE_INDEX_NAME=insurance-qa-index
 
-OLLAMA_MODEL=mistral:7b
+# Local LLM configuration
+OLLAMA_MODEL=mistral:7b-instruct
 OLLAMA_BASE_URL=http://localhost:11434
 ```
 
@@ -210,22 +211,31 @@ print(results)
 - Check Pinecone dashboard to verify index exists
 
 ### Slow Response Times
-- First query is slower due to model loading
-- Subsequent queries should be faster
-- Consider reducing `TOP_K_RESULTS` in config.py
+- First query can be slower due to model loading and Pinecone warm‑up.
+- On CPU-only inference, RAG queries can legitimately take 25–40 seconds (see performance section below).
+- Consider reducing `TOP_K_RESULTS` in `config.py` or using a GPU for lower latency.
 
 ### Out of Memory
 - Reduce batch size in `pinecone_setup.py`
 - Use a smaller embedding model
 - Close other applications
 
-## 📊 Performance
+## 📊 Performance & CPU Inference
 
-- **Setup Time**: ~5-10 minutes (one-time)
-- **Query Response**: 2-5 seconds
-- **Dataset Size**: ~12,000 Q&A pairs
-- **Embedding Dimension**: 384
-- **Memory Usage**: ~2-3 GB
+This project runs **Mistral-7B** locally via **Ollama**. When running on **CPU (no GPU)**, large language models are computationally intensive because each request:
+
+- Uses a context window up to **4096 tokens** (configured at 2048 for CPU efficiency)
+- Injects retrieved Q&A content into the prompt as part of the **RAG** pipeline
+- Builds a large **key–value (KV) cache** and recomputes attention matrices for each request
+
+**Expected latency (CPU‑only):**
+
+- RAG / complex insurance questions: **25–40 seconds** per response  
+- Simpler, non‑RAG answers (LLM‑only mode): **10–15 seconds**
+
+With a suitable **GPU** and **quantization**, the same model typically responds in **5–15 seconds**, which is standard for interactive Q&A systems.
+
+Because this system prioritizes **accuracy and faithfulness over raw speed**, slightly longer response times on CPU—especially for the first or complex RAG queries—are expected. A query cache is implemented so repeated or very similar questions return almost instantly.
 
 ## 🎨 Customization
 
