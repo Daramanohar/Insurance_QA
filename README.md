@@ -121,7 +121,7 @@ Setup Complete! Your chatbot is ready to use.
 ### Step 5: Run the Chatbot
 
 ```bash
-streamlit run app.py
+streamlit run app_final.py
 ```
 
 The app will open in your browser at `http://localhost:8501`
