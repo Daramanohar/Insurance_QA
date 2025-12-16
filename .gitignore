@@ -1,0 +1,83 @@
+__pycache__/
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store
+*.pyc
+*.pyo
+*.pyd
+*.pyd.*
+*.pdb
+*.egg-info/
+env/
+venv/
+.venv/
+*.log
+*.sqlite3
+*.ipynb_checkpoints/
+dist/
+build/
+*.egg
+query_cache.pkl
+*.pkl
+*.exe
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Streamlit
+.streamlit/
+
+# Data
+*.csv
+*.json
+insurance_qa_data.csv
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.zip
+presentation/
+
+

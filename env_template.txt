@@ -1,0 +1,11 @@
+# Pinecone Configuration
+# Get your API key from https://app.pinecone.io/
+PINECONE_API_KEY=
+PINECONE_ENVIRONMENT=us-east-1-aws
+PINECONE_INDEX_NAME=insurance-qa-index
+
+# Ollama Configuration
+OLLAMA_MODEL=mistral:7b
+OLLAMA_BASE_URL=http://localhost:11434
+
+
