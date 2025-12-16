@@ -4,6 +4,21 @@ This document provides a **single, end‑to‑end report** of the Insurance_QA p
 
 ---
 
+## Table of Contents
+
+1. [Project Overview](#1-project-overview)  
+2. [Architecture & Technology Stack](#2-architecture--technology-stack)  
+3. [Data Ingestion & Knowledge Base](#3-data-ingestion--knowledge-base)  
+4. [Retrieval & RAG Engine](#4-retrieval--rag-engine)  
+5. [User Interface & Transparency](#5-user-interface--transparency)  
+6. [Performance & CPU Inference Characteristics](#6-performance--cpu-inference-characteristics)  
+7. [Setup, Testing & Tooling](#7-setup-testing--tooling)  
+8. [Extensibility & Customization](#8-extensibility--customization)  
+9. [Example End‑to‑End Walkthrough](#9-example-end-to-end-walkthrough)  
+10. [Conclusion](#10-conclusion)  
+
+---
+
 ## 1. Project Overview
 
 The **Insurance_QA** project is an AI‑powered **Insurance Question‑Answering Chatbot** built with a **Retrieval‑Augmented Generation (RAG)** architecture. It is designed to answer health, auto, life, and general insurance questions using a curated knowledge base and a local, open‑source large language model (LLM).
@@ -31,7 +46,7 @@ The system is composed of five main layers:
 4. **RAG Engine** – Implemented in `optimized_rag_engine.py`, orchestrating retrieval, mode selection (RAG vs LLM‑only), answer synthesis, validation, caching, and performance logging.
 5. **Language Model** – **Mistral‑7B‑Instruct** served via **Ollama** (`ollama_client.py`) for natural‑language answer generation.
 
-### High‑Level Flow
+### 2.1 High‑Level Flow
 
 ```text
 User Question
@@ -59,7 +74,7 @@ UI → Answer + Similarity + Faithfulness + Sources + Metrics
 
 **Module:** `data_loader.py` + `pinecone_setup.py` / `pinecone_setup_simple.py`
 
-### Dataset: InsuranceQA‑v2
+### 3.1 Dataset: InsuranceQA‑v2
 
 - Source: [Hugging Face – insuranceqa](https://huggingface.co/datasets/insuranceqa)  
 - Size: ~12K–20K Q&A pairs  
@@ -68,7 +83,7 @@ UI → Answer + Similarity + Faithfulness + Sources + Metrics
   - `answers` – candidate answers  
   - `ground_truth` – index of the correct answer(s)  
 
-### Processing Steps
+### 3.2 Processing Steps
 
 1. Load the dataset using `datasets.load_dataset`.
 2. For each item:
@@ -92,7 +107,7 @@ UI → Answer + Similarity + Faithfulness + Sources + Metrics
    }
    ```
 
-### Vector Indexing in Pinecone
+### 3.3 Vector Indexing in Pinecone
 
 **Module:** `pinecone_setup.py`
 
