@@ -283,18 +283,18 @@ Feel free to:
 
 ## 📝 Assignment Submission Checklist
 
-- ✅ Uses open-source LLM (Mistral-7B via Ollama)
-- ✅ No OpenAI API
-- ✅ InsuranceQA dataset from Hugging Face
-- ✅ Streamlit chat interface
-- ✅ Retrieval-augmented generation (RAG)
-- ✅ Source references and context
-- ✅ Multi-turn conversation support
-- ✅ Error handling for edge cases
-- ✅ Well-commented code
-- ✅ Setup instructions
-- ✅ Efficient vector search with Pinecone
-- ✅ Clean, user-friendly UI
+- Uses open-source LLM (Mistral-7B via Ollama)
+-  No OpenAI API
+-  InsuranceQA dataset from Hugging Face
+-  Streamlit chat interface
+-  Retrieval-augmented generation (RAG)
+-  Source references and context
+-  Multi-turn conversation support
+-  Error handling for edge cases
+-  Well-commented code
+-  Setup instructions
+-  Efficient vector search with Pinecone
+-  Clean, user-friendly UI
 
 ## 🎓 How It Works
 
@@ -324,7 +324,7 @@ Feel free to:
 - Generate answer using Mistral-7B
 - Display with source references
 
-## 📞 Support
+##  Support
 
 For issues or questions:
 1. Check troubleshooting section
@@ -337,6 +337,6 @@ This project is created for educational purposes.
 
 ---
 
-**Built with ❤️ using open-source technologies**
+**Built with Love using open-source technologies**
 
 
