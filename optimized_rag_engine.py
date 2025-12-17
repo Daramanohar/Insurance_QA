@@ -380,53 +380,52 @@ Your Answer:"""
         
         import requests
         # SINGLE ATTEMPT ONLY - no retries to meet 60s latency cap
-        attempt = 0
-            prompt = prompt_template.format(
-                retrieved_question=retrieved_question,
-                retrieved_answer=retrieved_answer,
-                user_query=query
-            )
-            try:
-                payload = {
-                    "model": config.OLLAMA_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "num_ctx": self.CONTEXT_WINDOW,  # 2048 tokens
-                        "temperature": 0.2,
-                        "num_predict": self.MAX_TOKENS_RAG,  # <= 300 tokens
-                        "top_k": 15,
-                        "top_p": 0.7,
-                        "repeat_penalty": 1.15
-                    }
+        prompt = prompt_template.format(
+            retrieved_question=retrieved_question,
+            retrieved_answer=retrieved_answer,
+            user_query=query
+        )
+        try:
+            payload = {
+                "model": config.OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_ctx": self.CONTEXT_WINDOW,  # 2048 tokens
+                    "temperature": 0.2,
+                    "num_predict": self.MAX_TOKENS_RAG,  # <= 300 tokens
+                    "top_k": 15,
+                    "top_p": 0.7,
+                    "repeat_penalty": 1.15
                 }
-                
-                response = requests.post(
-                    config.OLLAMA_BASE_URL + "/api/generate",
-                    json=payload,
-                    timeout=self.MAX_GENERATION_TIME
-                )
-                
-                if response.status_code == 200:
-                    answer = response.json().get('response', '').strip()
-                    if answer and len(answer) > 20:
-                        cleaned = self._clean_answer(answer)
-                        # Faithfulness validation
-                        is_valid, _ = self._validate_answer_faithfulness(cleaned, retrieved_answer)
-                        score = self._compute_faithfulness_score(cleaned, retrieved_answer)
-                        self.last_faithfulness_score = score
-                        # Accept answer even if faithfulness is slightly below 0.8 (single attempt, no retries)
-                        if is_valid:
-                            logger.info(f"[RAG] ✅ Answer generated with faithfulness {score:.2f}")
-                            return cleaned
-                        else:
-                            logger.warning(f"[RAG] ⚠️ Validation flagged issues but accepting answer (single attempt)")
-                            return cleaned
-            except Exception as e:
-                logger.error(f"[RAG] Generation error: {e}")
-                # If generation fails, fall back to LLM-only mode (don't return wrong retrieved answer)
-                logger.info("[RAG] Generation failed, switching to LLM-only mode")
-                return self._generate_llm_only_mode(query)
+            }
+            
+            response = requests.post(
+                config.OLLAMA_BASE_URL + "/api/generate",
+                json=payload,
+                timeout=self.MAX_GENERATION_TIME
+            )
+            
+            if response.status_code == 200:
+                answer = response.json().get('response', '').strip()
+                if answer and len(answer) > 20:
+                    cleaned = self._clean_answer(answer)
+                    # Faithfulness validation
+                    is_valid, _ = self._validate_answer_faithfulness(cleaned, retrieved_answer)
+                    score = self._compute_faithfulness_score(cleaned, retrieved_answer)
+                    self.last_faithfulness_score = score
+                    # Accept answer even if faithfulness is slightly below 0.8 (single attempt, no retries)
+                    if is_valid:
+                        logger.info(f"[RAG] ✅ Answer generated with faithfulness {score:.2f}")
+                        return cleaned
+                    else:
+                        logger.warning(f"[RAG] ⚠️ Validation flagged issues but accepting answer (single attempt)")
+                        return cleaned
+        except Exception as e:
+            logger.error(f"[RAG] Generation error: {e}")
+            # If generation fails, fall back to LLM-only mode (don't return wrong retrieved answer)
+            logger.info("[RAG] Generation failed, switching to LLM-only mode")
+            return self._generate_llm_only_mode(query)
         
         # If we reach here, generation failed completely
         # CRITICAL: Do NOT return raw retrieved answer - generate from domain knowledge instead
