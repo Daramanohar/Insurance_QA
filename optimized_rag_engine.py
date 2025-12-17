@@ -142,22 +142,26 @@ class OptimizedRAGEngine:
         context_docs = []
         retrieval_avg_score = None
         
-        # CRITICAL: Pinecone retrieval ALWAYS runs (no early returns, no skipping)
+        # CRITICAL: Pinecone retrieval ALWAYS runs with domain filtering at query time
+        # Enhance query with domain-specific keywords for better retrieval
+        enhanced_query = self._enhance_query_with_domain(query, domain)
         logger.info(f"[RAG] MANDATORY: Running Pinecone retrieval (top_k={self.TOP_K}, domain={domain}) for: {query[:80]}")
         try:
-            # Retrieve with domain awareness (if Pinecone supports metadata filtering, use it)
-            context_docs = self.pinecone.search_similar(query, top_k=self.TOP_K)
+            # Retrieve with domain filtering at Pinecone level (metadata filter) + enhanced query
+            context_docs = self.pinecone.search_similar(enhanced_query, top_k=self.TOP_K, domain=domain)
             timings['retrieval'] = time.time() - retrieval_start
             
-            # POST-FILTER: Remove wrong-domain results if domain classification is confident
+            # Additional post-filter for safety (in case metadata filter isn't perfect)
             if domain != "general" and context_docs:
                 filtered_docs = []
                 for doc in context_docs:
+                    doc_domain = doc.get('domain', 'general')
                     doc_text = (doc.get('question', '') + ' ' + doc.get('answer', '')).lower()
-                    if self._is_domain_match(doc_text, domain):
+                    # Check both metadata domain and text-based domain match
+                    if doc_domain == domain or self._is_domain_match(doc_text, domain):
                         filtered_docs.append(doc)
                     else:
-                        logger.warning(f"[RAG] Filtered out wrong-domain doc: {doc.get('id', 'N/A')} (domain mismatch)")
+                        logger.warning(f"[RAG] Filtered out wrong-domain doc: {doc.get('id', 'N/A')} (domain={doc_domain}, expected={domain})")
                 if filtered_docs:
                     context_docs = filtered_docs
                 elif len(context_docs) > 0:

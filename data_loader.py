@@ -122,6 +122,9 @@ class InsuranceDataLoader:
                         # Create a combined text for better context
                         combined_text = f"Question: {question}\n\nAnswer: {answer}"
                         
+                        # Classify domain for better retrieval filtering
+                        domain = self._classify_domain(question, answer)
+                        
                         self.processed_data.append({
                             'id': f"qa_{idx}_{ans_idx}",
                             'question': question,
@@ -129,7 +132,8 @@ class InsuranceDataLoader:
                             'combined_text': combined_text,
                             'metadata': {
                                 'source': 'insuranceQA-v2',
-                                'original_idx': idx
+                                'original_idx': idx,
+                                'domain': domain  # Add domain for Pinecone filtering
                             }
                         })
             
@@ -142,6 +146,38 @@ class InsuranceDataLoader:
         
         logger.info(f"Processed {len(self.processed_data)} Q&A pairs")
         return self.processed_data
+    
+    def _classify_domain(self, question: str, answer: str) -> str:
+        """Classify insurance domain from question/answer text"""
+        text = (question + ' ' + answer).lower()
+        
+        # Auto insurance keywords
+        auto_keywords = ['auto', 'car', 'vehicle', 'driving', 'accident', 'collision', 'comprehensive', 
+                        'liability', 'deductible', 'premium', 'claim', 'no-claim', 'ncb', 'u-haul', 
+                        'uhaul', 'rental', 'truck', 'commercial vehicle', 'driving', 'road']
+        if any(kw in text for kw in auto_keywords):
+            return 'auto'
+        
+        # Health insurance keywords
+        health_keywords = ['health', 'medicare', 'medigap', 'medical', 'prescription', 'doctor', 'hospital',
+                          'surgery', 'procedure', 'coverage', 'plan', 'copay', 'rhinoplasty', 'duodenal',
+                          'cpap', 'uti', 'weight loss']
+        if any(kw in text for kw in health_keywords):
+            return 'health'
+        
+        # Life insurance keywords
+        life_keywords = ['life insurance', 'term life', 'whole life', 'endowment', 'death benefit', 
+                        'beneficiary', 'policy', 'coverage', 'borrow', 'cash value']
+        if any(kw in text for kw in life_keywords):
+            return 'life'
+        
+        # Home insurance keywords
+        home_keywords = ['home', 'homeowner', 'property', 'house', 'flood', 'fire', 'theft', 'damage',
+                        'coverage', 'dog', 'pet', 'liability']
+        if any(kw in text for kw in home_keywords):
+            return 'home'
+        
+        return 'general'
     
     def get_processed_data(self) -> List[Dict]:
         """

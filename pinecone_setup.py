@@ -128,15 +128,16 @@ class PineconeManager:
         # Prepare vectors for upsert
         vectors = []
         for i, (item, embedding) in enumerate(zip(data, embeddings)):
-            vector = {
-                'id': item['id'],
-                'values': embedding,
-                'metadata': {
-                    'question': item['question'][:1000],  # Pinecone metadata limits
-                    'answer': item['answer'][:1000],
-                    'source': item['metadata']['source']
+                vector = {
+                    'id': item['id'],
+                    'values': embedding,
+                    'metadata': {
+                        'question': item['question'][:1000],  # Pinecone metadata limits
+                        'answer': item['answer'][:1000],
+                        'source': item['metadata']['source'],
+                        'domain': item['metadata'].get('domain', 'general')  # Add domain for filtering
+                    }
                 }
-            }
             vectors.append(vector)
         
         # Upsert in batches
@@ -157,13 +158,14 @@ class PineconeManager:
         stats = self.index.describe_index_stats()
         logger.info(f"Index stats: {stats}")
     
-    def search_similar(self, query: str, top_k: int = None) -> List[Dict]:
+    def search_similar(self, query: str, top_k: int = None, domain: str = None) -> List[Dict]:
         """
         Search for similar vectors in Pinecone given a query.
         
         Args:
             query: User question/query string
             top_k: Number of similar results to return
+            domain: Optional domain filter ('auto', 'health', 'life', 'home', 'general')
             
         Returns:
             List of similar Q&A pairs with scores
@@ -177,27 +179,39 @@ class PineconeManager:
         # Generate embedding for query
         query_embedding = self.embedding_model.encode([query])[0].tolist()
         
-        # Search in Pinecone
-        results = self.index.query(
-            vector=query_embedding,
-            top_k=top_k,
-            include_metadata=True,
-            namespace=config.PINECONE_NAMESPACE
-        )
+        # Build metadata filter if domain is specified
+        filter_dict = None
+        if domain and domain != 'general':
+            filter_dict = {'domain': {'$eq': domain}}
+        
+        # Search in Pinecone with optional domain filter
+        query_params = {
+            'vector': query_embedding,
+            'top_k': top_k * 2 if filter_dict else top_k,  # Retrieve more if filtering to ensure we get enough results
+            'include_metadata': True,
+            'namespace': config.PINECONE_NAMESPACE
+        }
+        
+        if filter_dict:
+            query_params['filter'] = filter_dict
+        
+        results = self.index.query(**query_params)
         
         # Format results
         similar_docs = []
         for match in results['matches']:
-            # Do NOT over-filter by similarity; return top_k with scores and ids
+            # Return top_k with scores and ids (no threshold filtering here - let RAG engine decide)
             similar_docs.append({
                 'id': match['id'],
                 'score': match['score'],
                 'question': match['metadata'].get('question', ''),
                 'answer': match['metadata'].get('answer', ''),
-                'source': match['metadata'].get('source', '')
+                'source': match['metadata'].get('source', ''),
+                'domain': match['metadata'].get('domain', 'general')
             })
         
-        return similar_docs
+        # Return top_k results (in case we retrieved more due to filtering)
+        return similar_docs[:top_k]
     
     def delete_index(self) -> None:
         """
