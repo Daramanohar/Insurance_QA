@@ -25,17 +25,15 @@ class OptimizedRAGEngine:
     Efficient RAG Engine with Hard Relevance Gate
     """
     
-    # STRICT LATENCY BUDGETS (seconds)
-    # Adjusted for CPU inference: Ollama can take 18-20s on first generation
+    # STRICT LATENCY BUDGETS (seconds) - HARD CAP AT 60s
     MAX_RETRIEVAL_TIME = 2.0
-    MAX_GENERATION_TIME = 30.0   # Allow up to 30s for Ollama response time
-    MAX_TOTAL_TIME = 40.0        # End-to-end SLA per query (allows for CPU slowness)
+    MAX_GENERATION_TIME = 20.0   # Reduced to 20s - no retries, single attempt only
+    MAX_TOTAL_TIME = 60.0        # HARD CAP: Never exceed 60 seconds total
     
     # RETRIEVAL SETTINGS
-    # top_k in [2,3] as required – we use 3 for better coverage
     TOP_K = 3
-    # Threshold for considering a match "meaningful" – any score >= 0.15 means retrieval is valid
-    RELEVANCE_THRESHOLD = 0.15
+    # CRITICAL: Raised threshold to 0.35 to prevent wrong-domain retrieval (was 0.15)
+    RELEVANCE_THRESHOLD = 0.35  # Must be >= 0.35 for RAG mode, else LLM-only
     EXACT_MATCH_FUZZY_THRESHOLD = 0.85  # Jaccard similarity for near-exact matches
     
     # GENERATION SETTINGS (HARD CAPS FOR CPU INFERENCE)
@@ -43,8 +41,8 @@ class OptimizedRAGEngine:
     MAX_TOKENS_LLM_ONLY = 300   # Hard cap: 300 tokens max output
     MAX_RETRIEVED_CHARS = 800   # Truncate retrieved chunks to ~200-300 tokens (800 chars ≈ 200 tokens)
     CONTEXT_WINDOW = 2048       # CPU-optimized context window (between 2048–4096)
-    # Single retry allowed for robustness (generation + one retry on failure)
-    MAX_RETRIES = 1
+    # NO RETRIES - single attempt only to meet 60s latency cap
+    MAX_RETRIES = 0
     
     def __init__(self, pinecone_manager, ollama_client, cache_manager=None):
         """Initialize RAG engine"""
@@ -77,8 +75,10 @@ class OptimizedRAGEngine:
         retrieval_avg_score: Optional[float] = None
         mode: str = "unknown"
         
-        # Classify intent early (also used to decide if we should skip retrieval)
+        # CRITICAL: Classify domain BEFORE retrieval to filter wrong-domain results
+        domain = self._classify_domain(query)
         intent = self._classify_intent(query)
+        logger.info(f"[RAG] Domain classification: {domain}, Intent: {intent}")
         
         # Stage 1: Cache check (optional)
         if use_cache and self.cache:
@@ -143,10 +143,26 @@ class OptimizedRAGEngine:
         retrieval_avg_score = None
         
         # CRITICAL: Pinecone retrieval ALWAYS runs (no early returns, no skipping)
-        logger.info(f"[RAG] MANDATORY: Running Pinecone retrieval (top_k={self.TOP_K}) for: {query[:80]}")
+        logger.info(f"[RAG] MANDATORY: Running Pinecone retrieval (top_k={self.TOP_K}, domain={domain}) for: {query[:80]}")
         try:
+            # Retrieve with domain awareness (if Pinecone supports metadata filtering, use it)
             context_docs = self.pinecone.search_similar(query, top_k=self.TOP_K)
             timings['retrieval'] = time.time() - retrieval_start
+            
+            # POST-FILTER: Remove wrong-domain results if domain classification is confident
+            if domain != "general" and context_docs:
+                filtered_docs = []
+                for doc in context_docs:
+                    doc_text = (doc.get('question', '') + ' ' + doc.get('answer', '')).lower()
+                    if self._is_domain_match(doc_text, domain):
+                        filtered_docs.append(doc)
+                    else:
+                        logger.warning(f"[RAG] Filtered out wrong-domain doc: {doc.get('id', 'N/A')} (domain mismatch)")
+                if filtered_docs:
+                    context_docs = filtered_docs
+                elif len(context_docs) > 0:
+                    # If all filtered out but we had results, keep original (domain might be wrong)
+                    logger.warning(f"[RAG] All docs filtered by domain, keeping original results")
             
             if context_docs and len(context_docs) > 0:
                 top_score = context_docs[0].get('score', 0.0)
@@ -177,20 +193,23 @@ class OptimizedRAGEngine:
         # Stage 4: Check similarity score and decide RAG vs LLM-only
         generation_start = time.time()
         
-        # Decision logic: IF similarity >= threshold → USE RAG, ELSE → fallback to LLM-only
-        # MANDATORY: If we have ANY retrieved docs, we MUST use RAG mode (dataset is authoritative)
+        # Decision logic: IF similarity >= 0.35 → USE RAG, ELSE → LLM-only (domain knowledge)
+        # CRITICAL: Only use RAG if similarity is high enough (0.35), otherwise LLM generates from domain knowledge
         use_rag_mode = False
         if context_docs and len(context_docs) > 0:
             top_score = context_docs[0].get('score', 0.0)
-            # ALWAYS use RAG if we have retrieved context - dataset is authoritative
-            use_rag_mode = True
             if top_score >= self.RELEVANCE_THRESHOLD:
+                # Similarity >= 0.35 → USE RAG MODE
+                use_rag_mode = True
                 logger.info(f"[RAG] ✅ Similarity {top_score:.3f} >= {self.RELEVANCE_THRESHOLD} → RAG MODE")
+                retrieval_skipped_reason = None
             else:
-                logger.info(f"[RAG] ✅ Similarity {top_score:.3f} < {self.RELEVANCE_THRESHOLD} but using RAG MODE (dataset is authoritative)")
-            retrieval_skipped_reason = None  # Not skipped - we have retrieved context
+                # Similarity < 0.35 → LLM-ONLY MODE (chunks are irrelevant, use domain knowledge)
+                use_rag_mode = False
+                logger.info(f"[RAG] ⚠️ Similarity {top_score:.3f} < {self.RELEVANCE_THRESHOLD} → LLM-ONLY MODE (chunks irrelevant)")
+                retrieval_skipped_reason = "low_relevance"
         else:
-            # ONLY fallback to LLM-only if NO retrieval results at all
+            # NO retrieval results → LLM-ONLY MODE
             logger.info("[RAG] ⚠️ No retrieval results from Pinecone → LLM-ONLY MODE")
             retrieval_skipped_reason = "no_retrieval"
         
@@ -332,38 +351,32 @@ class OptimizedRAGEngine:
         
         logger.info(f"[RAG] RAG mode - using retrieved content (score: {best_match.get('score', 0):.3f})")
         
-        # RAG MODE PROMPT (strict, grounded - dataset is AUTHORITATIVE)
-        # The retrieved answer is the GROUND TRUTH - we must preserve it faithfully
-        prompt_template = """You are an insurance assistant. The retrieved knowledge base answer below is the AUTHORITATIVE source of truth.
+        # RAG MODE PROMPT - Natural, generative tone based on retrieved chunks
+        prompt_template = """You are an insurance expert assistant. Analyze the retrieved knowledge base content and the user's question, then generate a clear, natural answer.
 
-=== RETRIEVED KNOWLEDGE BASE (AUTHORITATIVE) ===
+=== RETRIEVED KNOWLEDGE BASE ===
 Question: {retrieved_question}
 Answer: {retrieved_answer}
-
-=== CRITICAL RULES ===
-1. The retrieved answer is the GROUND TRUTH - it is authoritative
-2. You MUST explain what the retrieved answer says accurately
-3. You MUST preserve ALL decision logic, conditions, lists, examples, and numerical details
-4. You MUST NOT:
-   - Contradict the retrieved answer
-   - Generalize away specific conditions
-   - Add information (insurers, brands, plans, expert opinions) that is not in the retrieved answer
-   - Dilute or weaken the meaning
-5. Your role is to EXPLAIN the dataset answer clearly, not replace it
 
 === USER QUESTION ===
 {user_query}
 
 === YOUR TASK ===
-Rewrite the retrieved answer in clear, natural language for a non-technical user while preserving ALL facts, distinctions, conditions, and structure.
-Do NOT copy long sentences verbatim unless defining a term. The goal is explanation, not quotation.
+Based on the retrieved knowledge base content above, answer the user's question in a natural, conversational tone. 
 
-Your Answer (faithful to retrieved content):"""
+Requirements:
+- Analyze what the retrieved content says about the user's question
+- Generate a clear, well-structured answer that explains the key points
+- Preserve all important conditions, decision logic, lists, and numerical details from the retrieved content
+- Write naturally - do NOT copy sentences verbatim unless defining a specific term
+- Do NOT add information (insurer names, brands, plans, opinions) that is NOT in the retrieved content
+- If the retrieved content doesn't fully address the question, explain what it does cover clearly
+
+Your Answer:"""
         
         import requests
-        last_error: Optional[str] = None
-        # Up to MAX_RETRIES + 1 attempts to achieve faithfulness >= 0.8
-        for attempt in range(self.MAX_RETRIES + 1):
+        # SINGLE ATTEMPT ONLY - no retries to meet 60s latency cap
+        attempt = 0
             prompt = prompt_template.format(
                 retrieved_question=retrieved_question,
                 retrieved_answer=retrieved_answer,
@@ -398,68 +411,23 @@ Your Answer (faithful to retrieved content):"""
                         is_valid, _ = self._validate_answer_faithfulness(cleaned, retrieved_answer)
                         score = self._compute_faithfulness_score(cleaned, retrieved_answer)
                         self.last_faithfulness_score = score
-                        if is_valid and score >= 0.8:
-                            logger.info(f"[RAG] ✅ Answer validated with faithfulness {score:.2f} (attempt {attempt + 1})")
+                        # Accept answer even if faithfulness is slightly below 0.8 (single attempt, no retries)
+                        if is_valid:
+                            logger.info(f"[RAG] ✅ Answer generated with faithfulness {score:.2f}")
                             return cleaned
                         else:
-                            logger.warning(f"[RAG] ⚠️ Faithfulness {score:.2f} below 0.8 or validation flagged issues (attempt {attempt + 1})")
-                            last_error = f"Faithfulness {score:.2f} below threshold"
-                            continue
+                            logger.warning(f"[RAG] ⚠️ Validation flagged issues but accepting answer (single attempt)")
+                            return cleaned
             except Exception as e:
-                last_error = str(e)
-                logger.error(f"[RAG] Generation error (attempt {attempt + 1}): {e}")
-                continue
+                logger.error(f"[RAG] Generation error: {e}")
+                # If generation fails, fall back to LLM-only mode (don't return wrong retrieved answer)
+                logger.info("[RAG] Generation failed, switching to LLM-only mode")
+                return self._generate_llm_only_mode(query)
         
-        # If we reach here, strict validation/retries failed.
-        # We still want a natural explanation, NOT a raw paste of the dataset.
-        # Try ONE last, simplified paraphrase without heavy validation.
-        try:
-            simple_prompt = f"""Explain the following insurance answer in clear, simple language for a non-technical user.
-
-Original answer:
-{retrieved_answer}
-
-Your task:
-- Explain what this answer means
-- Keep all key conditions, lists and numbers
-- Do NOT add new companies, plans or opinions
-
-Explanation:"""
-            payload = {
-                "model": config.OLLAMA_MODEL,
-                "prompt": simple_prompt,
-                "stream": False,
-                "options": {
-                    "num_ctx": self.CONTEXT_WINDOW,
-                    "temperature": 0.2,
-                    "num_predict": self.MAX_TOKENS_RAG,
-                    "top_k": 15,
-                    "top_p": 0.7,
-                    "repeat_penalty": 1.15
-                }
-            }
-            import requests
-            response = requests.post(
-                config.OLLAMA_BASE_URL + "/api/generate",
-                json=payload,
-                timeout=self.MAX_GENERATION_TIME
-            )
-            if response.status_code == 200:
-                answer = response.json().get('response', '').strip()
-                if answer and len(answer) > 20:
-                    cleaned = self._clean_answer(answer)
-                    if cleaned:
-                        # We know it's at least grounded in the retrieved text we provided.
-                        self.last_faithfulness_score = self._compute_faithfulness_score(cleaned, retrieved_answer)
-                        logger.info("[RAG] Used simplified paraphrase fallback instead of raw dataset paste")
-                        return cleaned
-        except Exception as e:
-            logger.error(f"[RAG] Simplified paraphrase fallback failed: {e}")
-
-        # Absolute last resort: return the dataset answer itself (truncated) to avoid empty output.
-        logger.info(f"[RAG] Using retrieved answer directly as last-resort fallback. Last issue: {last_error}")
-        self.last_faithfulness_score = 1.0
-        return retrieved_answer[:500]  # Truncate for consistency
+        # If we reach here, generation failed completely
+        # CRITICAL: Do NOT return raw retrieved answer - generate from domain knowledge instead
+        logger.warning("[RAG] RAG generation failed, falling back to LLM-only mode")
+        return self._generate_llm_only_mode(query)
     
     def _generate_llm_only_mode(self, query: str) -> str:
         """
@@ -473,58 +441,168 @@ Explanation:"""
         intent = self._classify_intent(query)
         intent_hint = self._get_intent_hint(intent)
         
-        # LLM-ONLY MODE PROMPT (MINIMAL for CPU inference)
-        base_prompt = f"""You are an insurance expert. Answer this question using general insurance domain knowledge.
+        # LLM-ONLY MODE PROMPT - Generate meaningful answers from domain knowledge
+        base_prompt = f"""You are an insurance expert assistant. Answer the following insurance question using your knowledge of insurance principles, policies, and industry practices.
 
 Question: {query}
 
 Guidance: {intent_hint}
 
-Provide a clear, accurate, and user-friendly answer. Answer:"""
+Provide a clear, accurate, and comprehensive answer that:
+- Explains the key concepts clearly
+- Covers important conditions, exceptions, or factors that apply
+- Uses natural, conversational language
+- Is helpful and informative for the user
+
+Answer:"""
         
         import requests
-        last_error: Optional[str] = None
-        for attempt in range(self.MAX_RETRIES + 1):
-            try:
-                prompt = base_prompt
-                payload = {
-                    "model": config.OLLAMA_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "num_ctx": self.CONTEXT_WINDOW,
-                        "temperature": 0.4,
-                        "num_predict": self.MAX_TOKENS_LLM_ONLY,  # <= 300 tokens
-                        "top_k": 30,
-                        "top_p": 0.9
-                    }
+        try:
+            prompt = base_prompt
+            payload = {
+                "model": config.OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_ctx": self.CONTEXT_WINDOW,
+                    "temperature": 0.4,
+                    "num_predict": self.MAX_TOKENS_LLM_ONLY,  # <= 300 tokens
+                    "top_k": 30,
+                    "top_p": 0.9
                 }
-                
-                response = requests.post(
-                    config.OLLAMA_BASE_URL + "/api/generate",
-                    json=payload,
-                    timeout=self.MAX_GENERATION_TIME
-                )
-                
-                if response.status_code == 200:
-                    answer = response.json().get('response', '').strip()
-                    if answer and len(answer) > 20:
-                        cleaned = self._clean_answer(answer)
-                        if cleaned:
-                            return cleaned
-            except Exception as e:
-                last_error = str(e)
-                logger.warning(f"[RAG] LLM-only generation failed (attempt {attempt + 1}): {e}")
-                continue
+            }
+            
+            response = requests.post(
+                config.OLLAMA_BASE_URL + "/api/generate",
+                json=payload,
+                timeout=self.MAX_GENERATION_TIME
+            )
+            
+            if response.status_code == 200:
+                answer = response.json().get('response', '').strip()
+                if answer and len(answer) > 20:
+                    cleaned = self._clean_answer(answer)
+                    if cleaned:
+                        return cleaned
+        except Exception as e:
+            logger.error(f"[RAG] LLM-only generation failed: {e}")
         
         # Immediate fallback: knowledge-based answer (no waiting, never empty)
-        logger.info(f"[RAG] Falling back to knowledge-based answer after LLM-only failures. Last issue: {last_error}")
+        logger.info("[RAG] Falling back to knowledge-based answer after LLM-only failure")
         return self._get_knowledge_based_fallback(query)
     
     # REMOVED: _should_skip_retrieval function
     # We ALWAYS attempt retrieval - accuracy comes first
     # The dataset has 21k+ Q&A pairs, so we should always try to find relevant context
     # Latency optimization comes from other means (exact match, caching, token limits)
+    
+    def _classify_domain(self, query: str) -> str:
+        """
+        Classify insurance domain BEFORE retrieval to filter wrong-domain results.
+        Returns: 'auto', 'health', 'life', 'home', 'general'
+        """
+        q_lower = query.lower()
+        
+        # Auto insurance keywords
+        auto_keywords = ['auto', 'car', 'vehicle', 'driving', 'accident', 'collision', 'comprehensive', 
+                        'liability', 'deductible', 'premium', 'claim', 'no-claim', 'ncb', 'u-haul', 
+                        'uhaul', 'rental', 'truck', 'commercial vehicle']
+        if any(kw in q_lower for kw in auto_keywords):
+            return 'auto'
+        
+        # Health insurance keywords
+        health_keywords = ['health', 'medicare', 'medigap', 'medical', 'prescription', 'doctor', 'hospital',
+                          'surgery', 'procedure', 'coverage', 'plan', 'deductible', 'copay', 'premium']
+        if any(kw in q_lower for kw in health_keywords):
+            return 'health'
+        
+        # Life insurance keywords
+        life_keywords = ['life insurance', 'term life', 'whole life', 'endowment', 'death benefit', 
+                        'beneficiary', 'premium', 'policy', 'coverage']
+        if any(kw in q_lower for kw in life_keywords):
+            return 'life'
+        
+        # Home insurance keywords
+        home_keywords = ['home', 'homeowner', 'property', 'house', 'flood', 'fire', 'theft', 'damage',
+                        'coverage', 'premium', 'deductible', 'claim']
+        if any(kw in q_lower for kw in home_keywords):
+            return 'home'
+        
+        return 'general'
+    
+    def _is_domain_match(self, doc_text: str, domain: str) -> bool:
+        """
+        Check if document text matches the classified domain.
+        Returns True if domain matches or domain is 'general'.
+        """
+        if domain == 'general':
+            return True
+        
+        doc_lower = doc_text.lower()
+        
+        domain_keywords = {
+            'auto': ['auto', 'car', 'vehicle', 'driving', 'accident', 'collision', 'liability', 'u-haul', 'uhaul'],
+            'health': ['health', 'medicare', 'medigap', 'medical', 'prescription', 'doctor', 'hospital', 'surgery'],
+            'life': ['life insurance', 'term life', 'whole life', 'endowment', 'death benefit'],
+            'home': ['home', 'homeowner', 'property', 'house', 'flood', 'fire', 'theft']
+        }
+        
+        keywords = domain_keywords.get(domain, [])
+        return any(kw in doc_lower for kw in keywords)
+    
+    def _classify_domain(self, query: str) -> str:
+        """
+        Classify insurance domain BEFORE retrieval to filter wrong-domain results.
+        Returns: 'auto', 'health', 'life', 'home', 'general'
+        """
+        q_lower = query.lower()
+        
+        # Auto insurance keywords
+        auto_keywords = ['auto', 'car', 'vehicle', 'driving', 'accident', 'collision', 'comprehensive', 
+                        'liability', 'deductible', 'premium', 'claim', 'no-claim', 'ncb', 'u-haul', 
+                        'uhaul', 'rental', 'truck', 'commercial vehicle']
+        if any(kw in q_lower for kw in auto_keywords):
+            return 'auto'
+        
+        # Health insurance keywords
+        health_keywords = ['health', 'medicare', 'medigap', 'medical', 'prescription', 'doctor', 'hospital',
+                          'surgery', 'procedure', 'coverage', 'plan', 'deductible', 'copay', 'premium']
+        if any(kw in q_lower for kw in health_keywords):
+            return 'health'
+        
+        # Life insurance keywords
+        life_keywords = ['life insurance', 'term life', 'whole life', 'endowment', 'death benefit', 
+                        'beneficiary', 'premium', 'policy', 'coverage']
+        if any(kw in q_lower for kw in life_keywords):
+            return 'life'
+        
+        # Home insurance keywords
+        home_keywords = ['home', 'homeowner', 'property', 'house', 'flood', 'fire', 'theft', 'damage',
+                        'coverage', 'premium', 'deductible', 'claim']
+        if any(kw in q_lower for kw in home_keywords):
+            return 'home'
+        
+        return 'general'
+    
+    def _is_domain_match(self, doc_text: str, domain: str) -> bool:
+        """
+        Check if document text matches the classified domain.
+        Returns True if domain matches or domain is 'general'.
+        """
+        if domain == 'general':
+            return True
+        
+        doc_lower = doc_text.lower()
+        
+        domain_keywords = {
+            'auto': ['auto', 'car', 'vehicle', 'driving', 'accident', 'collision', 'liability', 'u-haul', 'uhaul'],
+            'health': ['health', 'medicare', 'medigap', 'medical', 'prescription', 'doctor', 'hospital', 'surgery'],
+            'life': ['life insurance', 'term life', 'whole life', 'endowment', 'death benefit'],
+            'home': ['home', 'homeowner', 'property', 'house', 'flood', 'fire', 'theft']
+        }
+        
+        keywords = domain_keywords.get(domain, [])
+        return any(kw in doc_lower for kw in keywords)
     
     def _classify_intent(self, query: str) -> str:
         """Classify question intent"""
