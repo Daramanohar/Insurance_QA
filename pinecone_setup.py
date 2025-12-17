@@ -128,16 +128,16 @@ class PineconeManager:
         # Prepare vectors for upsert
         vectors = []
         for i, (item, embedding) in enumerate(zip(data, embeddings)):
-                vector = {
-                    'id': item['id'],
-                    'values': embedding,
-                    'metadata': {
-                        'question': item['question'][:1000],  # Pinecone metadata limits
-                        'answer': item['answer'][:1000],
-                        'source': item['metadata']['source'],
-                        'domain': item['metadata'].get('domain', 'general')  # Add domain for filtering
-                    }
+            vector = {
+                'id': item['id'],
+                'values': embedding,
+                'metadata': {
+                    'question': item['question'][:1000],  # Pinecone metadata limits
+                    'answer': item['answer'][:1000],
+                    'source': item['metadata']['source'],
+                    'domain': item['metadata'].get('domain', 'general')  # Add domain for filtering
                 }
+            }
             vectors.append(vector)
         
         # Upsert in batches
