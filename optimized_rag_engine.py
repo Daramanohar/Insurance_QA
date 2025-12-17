@@ -534,6 +534,34 @@ Answer:"""
         
         return 'general'
     
+    def _enhance_query_with_domain(self, query: str, domain: str) -> str:
+        """
+        Enhance query with domain-specific keywords to improve retrieval quality.
+        This helps the embedding model find more relevant results.
+        """
+        if domain == 'general':
+            return query
+        
+        # Add domain-specific context keywords to query
+        domain_keywords = {
+            'auto': ['auto insurance', 'car insurance', 'vehicle insurance', 'driving', 'accident'],
+            'health': ['health insurance', 'medical insurance', 'healthcare', 'medical coverage'],
+            'life': ['life insurance', 'life policy', 'life coverage'],
+            'home': ['home insurance', 'homeowner insurance', 'property insurance', 'home coverage']
+        }
+        
+        keywords = domain_keywords.get(domain, [])
+        if keywords:
+            # Add 1-2 relevant keywords that aren't already in the query
+            query_lower = query.lower()
+            missing_keywords = [kw for kw in keywords if kw not in query_lower]
+            if missing_keywords:
+                enhanced = query + ' ' + ' '.join(missing_keywords[:2])
+                logger.info(f"[RAG] Enhanced query with domain keywords: {enhanced[:100]}")
+                return enhanced
+        
+        return query
+    
     def _is_domain_match(self, doc_text: str, domain: str) -> bool:
         """
         Check if document text matches the classified domain.
